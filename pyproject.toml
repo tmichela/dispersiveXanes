@@ -1,0 +1,14 @@
+[project]
+name = "dispersive_xanes"
+description = "playground for dispersive XANES analysis"
+version = "0.0.1"
+authors = [
+    { name = "Thomas Michelat", email = "thomas.michelat@xfel.eu" }
+]
+dependencies = []
+
+[project.optional-dependencies]
+
+[build-system]
+build-backend = "flit_core.buildapi"
+requires = ["flit_core >=3.2,<4"]
