@@ -5,7 +5,13 @@ version = "0.0.1"
 authors = [
     { name = "Thomas Michelat", email = "thomas.michelat@xfel.eu" }
 ]
-dependencies = []
+dependencies = [
+    'extra-data',
+    'iminuit<2.0',
+    'numpy',
+    'scikit-image',
+    'scipy',
+]
 
 [project.optional-dependencies]
 
