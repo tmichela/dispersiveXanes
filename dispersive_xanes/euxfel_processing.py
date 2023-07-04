@@ -1,6 +1,6 @@
 from extra_data import open_run
 import numpy as np
-from .dispersiveXanesAlignment import doShot, g_fit_default_kw, plotShot, subtractBkg
+from .alignment import doShot, g_fit_default_kw, plotShot, subtractBkg
 from functools import partial
 from .mcutils import rebin
 from scipy.ndimage import zoom

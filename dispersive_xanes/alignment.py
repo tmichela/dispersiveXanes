@@ -1,13 +1,13 @@
 from skimage import transform as tf
 from scipy.ndimage import gaussian_filter1d as g1d
-
 import joblib
 import collections
 import numpy as np
 import matplotlib.pyplot as plt
 import time
 
-import mcutils as mc
+from .mcutils import gaussian
+from .utils import calcFOM, getCenterOfMass
 
 # /--------\
 # |        |
@@ -15,15 +15,18 @@ import mcutils as mc
 # |        |
 # \--------/
 
+# ENEGRY CALIBRATION
 # defaultE = np.arange(1024)*0.12+7060
-# defaultE = (np.arange(1024)-512)*0.189+7123
-# defaultE = 7064.5-6+0.1295*np.arange(1024)
+defaultE = (np.arange(1024) - 512) * 0.189 + 7123
+defaultE = 7063.5 + 0.1295 * np.arange(1024)
+# done on nov 30 2016, based on xppl3716:r77
+defaultE = 7064.5 - 6 + 0.1295 * np.arange(1024)
+# done on jun 07 2017, based on reference spectrum from ESRF
 
-defaultE = 7064.5 + 0.1295 * np.arange(1024)
 __i = np.arange(1024)
-
-
 __x = (__i - 512) / 512
+
+# INIT PARAMETERS
 
 g_fit_default_kw = dict(
     intensity=1.0,
@@ -69,12 +72,6 @@ g_fit_default_kw = dict(
 )
 
 
-def rebin1D(a, shape):
-    n0 = a.shape[0] // shape
-    sh = shape, n0
-    return a[: n0 * shape].reshape(sh).mean(1)
-
-
 cmap = plt.cm.viridis if hasattr(plt.cm, "viridis") else plt.cm.gray
 kw_2dplot = dict(interpolation="none", aspect="auto", cmap=cmap)
 
@@ -99,16 +96,16 @@ fit_ret = collections.namedtuple(
 )
 
 
-def calcFOM(p1, p2, ratio):
-    idx = p1 > p1.max() / 10  # & (p2>p2.max()/10)
-    ratio = ratio[idx]
-    return ratio.std() / ratio.mean()
+def findRoi(img, height=100, axis=0):
+    c = int(getCenterOfMass(img, axis=axis))
+    roi = slice(c - height // 2, c + height // 2)
+    return roi
 
 
 def subtractBkg(imgs, nPix=100, bkg_type="line"):
     if imgs.ndim == 2:
         imgs = imgs[np.newaxis, :]
-    imgs = imgs.astype(np.float)
+    imgs = imgs.astype(np.float64)
     if bkg_type == "line":
         bkg = np.median(imgs[:, :nPix, :], axis=1)
         imgs = imgs - bkg[:, np.newaxis, :]
@@ -127,22 +124,6 @@ def subtractBkg(imgs, nPix=100, bkg_type="line"):
     else:
         print("Background subtraction '%s' Not impleted" % bkg_type)
     return imgs
-
-
-def getCenterOfMax(img, axis=0, threshold=0.05):
-    img = img.copy()
-    img[img < img.max() * threshold] = 0
-    if axis == 1:
-        img = img.T
-    p = img.mean(1)
-    x = np.arange(img.shape[0])
-    return np.sum(x * p) / np.sum(p)
-
-
-def findRoi(img, height=100, axis=0):
-    c = int(getCenterOfMax(img, axis=axis))
-    roi = slice(c - height // 2, c + height // 2)
-    return roi
 
 
 # /--------------------\
@@ -178,6 +159,10 @@ def plotShot(
     ax[0].imshow(im1, extent=(E[0], E[-1], 0, n), **kw_2dplot)
     ax[1].imshow(im2, extent=(E[0], E[-1], 0, n), **kw_2dplot)
     ax[2].imshow(im1 - im2, extent=(E[0], E[-1], 0, n), **kw_2dplot)
+    ax[1].tick_params(labelleft=False)
+    ax[2].tick_params(labelleft=False)
+    #  ax[1].set_yticks([])
+    #  ax[2].set_yticks([])
     if res is None:
         p1 = np.nansum(im1, axis=0)
         p2 = np.nansum(im2, axis=0)
@@ -191,11 +176,16 @@ def plotShot(
     ax[4].plot(E, p2, lw=1)
     idx = p1 > p1.max() / 10.0
     ax[5].plot(E[idx], pr[idx])
-    ax[5].set_ylim(0, 4)
+    #  ax[4].set_yticks([])
+    ax[4].tick_params(labelleft=False)
+    ax[5].set_ylim(0, 3)
     if res is not None:
-        ax[5].set_title("FOM: %.2f" % res.fom)
+        fig.text(0.8, 0.4, "std = %.2f" % res.fom, fontsize=9)
+    #    fig.text(0.8, 0.4, "σ = %.2f"%np.nanstd(np.log10(pr[200:800])), fontsize = 9)
     else:
-        ax[5].set_title("FOM: %.2f" % calcFOM(p1, p2, pr))
+        fig.text(0.8, 0.4, "std = %.2f" % calcFOM(p1, p2, pr), fontsize=9)
+    #    fig.text(0.8, 0.4, "σ = %.2f"%np.nanstd(np.log10(pr[200:800])), fontsize = 9)
+
     if (save is not None) and (save is not False):
         plt.savefig(save, transparent=True, dpi=500)
     return fig
@@ -247,14 +237,6 @@ def plotSingleShots(
         plt.savefig(save, transparent=True, dpi=500)
 
 
-# def plotSpectra(r1,r2,r3,r4,Shoti= 10, fig=None,E=defaultE,save=None)
-# for i in range(4):
-#  ax[0].plot(E, r1[Shoti] + i
-# ax[1].legend()
-# ax[1].set_ylim(0,len(av)+0.5)
-# ax[1].set_xlabel("Energy")
-# ax[1].set_ylabel("Transmission")
-
 # /--------------------\
 # |                    |
 # |  TRANSFORM & CO.   |
@@ -297,7 +279,7 @@ def transformImage(
         if isinstance(igauss, (int, float)):
             igauss = (__i[-1] / 2, igauss)
             # if one parameter only, assume it is centered on image
-        g = mc.gaussian(__i, x0=igauss[0], sig=igauss[1], normalize=False)
+        g = gaussian(__i, x0=igauss[0], sig=igauss[1], normalize=False)
         i *= g
     if show:
         plotShot(img, i)
@@ -346,12 +328,30 @@ class SpecrometerTransformation(object):
         )
 
 
-def saveAlignment(fname, transform, roi1, roi2):
-    np.save(fname, dict(transform=transform, roi1=roi1, roi2=roi2))
+def saveAlignment(fname, transform, roi1, roi2, swap):
+    np.save(fname, dict(transform=transform, roi1=roi1, roi2=roi2, swap=swap))
 
 
 def loadAlignment(fname):
     return np.load(fname).item()
+
+
+def getBestTransform(results):
+    # try to see if it is unravelled
+    if not hasattr(results, "_fields"):
+        results = unravel_results(results)
+    # find best based on FOM
+    idx = np.nanargmin(np.abs(results.fom))
+    parnames = results.init_pars.keys()
+    bestPars = dict()
+    for n in parnames:
+        bestPars[n] = results.final_pars[n][idx]
+        if n.find("limit_") == 0:
+            if bestPars[n][0] is None:
+                bestPars[n] = None
+            else:
+                bestPars[n] = tuple(bestPars[n])
+    return bestPars, np.nanmin(np.abs(results.fom))
 
 
 def unravel_results(res, nSaveImg="all"):
@@ -364,8 +364,12 @@ def unravel_results(res, nSaveImg="all"):
     final_pars = dict()
     init_pars = dict()
     for n in parnames:
-        final_pars[n] = np.hstack([r.final_pars[n] for r in res])
-        init_pars[n] = np.hstack([r.init_pars[n] for r in res])
+        if n.find("limit_") == 0:
+            final_pars[n] = np.vstack([r.final_pars[n] for r in res])
+            init_pars[n] = np.vstack([r.init_pars[n] for r in res])
+        else:
+            final_pars[n] = np.hstack([r.final_pars[n] for r in res])
+            init_pars[n] = np.hstack([r.init_pars[n] for r in res])
     im1 = np.asarray([r.im1 for r in res if r.im1.shape[0] != 0])
     im2 = np.asarray([r.im2 for r in res if r.im2.shape[0] != 0])
     if nSaveImg != "all":
@@ -423,7 +427,7 @@ def transformIminuit(
     init_transform=dict(),
     show=False,
     verbose=True,
-    zeroThreshold=0.05,
+    zeroThreshold=0.0,
     doFit=True,
 ):
     import iminuit
@@ -434,7 +438,7 @@ def transformIminuit(
     im1_toFit = im1.copy()
     im2_toFit = im2.copy()
 
-    # set anything below the 5% of the max to zero (one of the two opal is noisy)
+    # set anything below the zeroThreshold of the max to zero (one of the two opal is noisy)
     im1_toFit[im1_toFit < im1.max() * zeroThreshold] = 0
     im2_toFit[im2_toFit < im2.max() * zeroThreshold] = 0
     p1 = im1.mean(0)
@@ -537,8 +541,8 @@ def transformIminuit(
 
     # set default initial stepsize and limits
     r = im2.mean(0).sum() / im1.mean(0).sum()
-
     default_kw = g_fit_default_kw.copy()
+    # will be used only if not in initpars
     default_kw["intensity"] = r
 
     init_kw = dict()
@@ -570,7 +574,14 @@ def transformIminuit(
         i1, i2 = model(*imin.args)
         plotShot(i1, i2)
         fig = plt.gcf()
-        fig.text(0.5, 0.9, "Initial Pars")
+        fig.text(0.4, 0.93, "Before Image Transformation")
+        fig.text(0.15, 0.89, "2D image spectro. #1", fontsize=7)
+        fig.text(0.46, 0.89, "2D image spectro. #2", fontsize=7)
+        fig.text(0.72, 0.89, "2D image difference", fontsize=7)
+        fig.text(0.17, 0.47, "Spectra #1", fontsize=7)
+        fig.text(0.48, 0.47, "Spectra #2", fontsize=7)
+        fig.text(0.72, 0.47, "Transmission", fontsize=7)
+        plt.draw()
         input("Enter to start fit")
 
     if doFit:
@@ -594,7 +605,13 @@ def transformIminuit(
     if show:
         plotShot(i1, i2)
         fig = plt.gcf()
-        fig.text(0.5, 0.9, "Final Pars")
+        fig.text(0.4, 0.93, "After Image Transformation")
+        fig.text(0.15, 0.89, "2D image spectro. #1", fontsize=7)
+        fig.text(0.46, 0.89, "2D image spectro. #2", fontsize=7)
+        fig.text(0.72, 0.89, "2D image difference", fontsize=7)
+        fig.text(0.17, 0.47, "Spectra #1", fontsize=7)
+        fig.text(0.48, 0.47, "Spectra #2", fontsize=7)
+        fig.text(0.72, 0.47, "Transmission", fontsize=7)
 
     p1 = np.nansum(i1, axis=0)
     p2 = np.nansum(i2, axis=0)
@@ -701,17 +718,19 @@ class GuiAlignment(object):
         self.transform = np.load(fname).item()
 
 
-def getAverageTransformation(out):
-    res = append_results(out)
-    # get average parameters
-    tx = np.median(res["transx"])
-    ty = np.median(res["transy"])
-    sx = np.median(res["scalex"])
-    sy = np.median(res["scaley"])
-    r = np.median(res["rotation"])
-    sh = np.median(res["shear"])
-    inten = np.median(res["intensity"])
-    t = getTransform((tx, ty), (sx, sy), r, sh, intensity=inten)
+def getAverageTransformation(res):
+    if hasattr(res, "final_pars"):
+        res = res.final_pars
+    out = dict()
+    for k in res.keys():
+        if k.find("error_") == 0 or k.find("limit_") == 0 or k.find("fix_") == 0:
+            if (type(res[k][0]) == np.ndarray) and res[k][0][0] == None:
+                out[k] = None
+            else:
+                out[k] = res[k][0]
+        else:
+            out[k] = np.nanmedian(res[k])
+    return out
     return t
 
 
@@ -735,9 +754,6 @@ def clearCache():
 
 
 def doShot(i1, i2, init_pars, doFit=True, show=False):
-    global __i, defaultE
-    defaultE = 7064.5 + 0.1295 * np.arange(i1.shape[-1])
-    __i = np.arange(i1.shape[-1])
     # if g_lastpars is not None: init_pars = g_lastpars
     r = transformIminuit(i1, i2, init_pars, show=show, verbose=False, doFit=doFit)
     return r
@@ -754,16 +770,15 @@ def doShots(
 ):
     clearCache()
     N = imgs1.shape[0]
-    #  pool = [ doShot(imgs1[i],imgs2[i],initpars,doFit=doFit) for i in range(N) ]
     pool = joblib.Parallel(backend="threading", n_jobs=nJobs)(
         joblib.delayed(doShot)(imgs1[i], imgs2[i], initpars, doFit=doFit)
         for i in range(N)
     )
     res = unravel_results(pool, nSaveImg=nSaveImg)
     if returnBestTransform:
-        idx = np.nanargmin(res.fom)
-        print("FOM for best alignment %.2f" % res.fom[idx])
-        return res, pool[idx].final_pars
+        bestT, fom = getBestTransform(res)
+        print("FOM for best alignment %.2f" % fom)
+        return res, bestT
     else:
         return res
 
@@ -779,25 +794,32 @@ def doShots(
 # \--------/
 
 
-# def testDiling(N=100,roi=slice(350,680),doGUIalignment=False,nJobs=4,useIminuit=True):
-#   import xppll37_mc
-#   globals()["g_lastpars"]=None
-#   d = xppll37_mc.readDilingDataset()
-#   im1 = xppll37_mc.subtractBkg(d.opal1[:N])[:,roi,:]
-#   im2 = xppll37_mc.subtractBkg(d.opal2[:N])[:,roi,:]
-#   N   = im1.shape[0]; # redefie N in case it reads less than N
-#   # to manual alignment
-#   if doGUIalignment:
-#     a = GuiAlignment(im1[0],im2[0])
-#     input("Ok to start")
-#     init_pars = a.start()
-#     np.save("gui_align_transform.npy",init_pars)
-#   else:
-#     init_pars = np.load("gui_align_transform.npy").item()
-#   pool = joblib.Parallel(backend="threading",n_jobs=nJobs,verbose=20) \
-#     (joblib.delayed(doShot)(im1[i],im2[i],init_pars,useIminuit=useIminuit) for i in range(N))
-#   out = collections.OrderedDict( enumerate(pool) )
-#   return out
+def testDiling(
+    N=100, roi=slice(350, 680), doGUIalignment=False, nJobs=4, useIminuit=True
+):
+    import xppll37_mc
+
+    globals()["g_lastpars"] = None
+    d = xppll37_mc.readDilingDataset()
+    im1 = xppll37_mc.subtractBkg(d.opal1[:N])[:, roi, :]
+    im2 = xppll37_mc.subtractBkg(d.opal2[:N])[:, roi, :]
+    N = im1.shape[0]
+    # redefie N in case it reads less than N
+    # to manual alignment
+    if doGUIalignment:
+        a = GuiAlignment(im1[0], im2[0])
+        input("Ok to start")
+        init_pars = a.start()
+        np.save("gui_align_transform.npy", init_pars)
+    else:
+        init_pars = np.load("gui_align_transform.npy").item()
+    pool = joblib.Parallel(backend="threading", n_jobs=nJobs, verbose=20)(
+        joblib.delayed(doShot)(im1[i], im2[i], init_pars, useIminuit=useIminuit)
+        for i in range(N)
+    )
+    out = collections.OrderedDict(enumerate(pool))
+    return out
+
 
 if __name__ == "__main__":
     pass
